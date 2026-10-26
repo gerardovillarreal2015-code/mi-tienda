@@ -23,7 +23,16 @@ h2{font-size:26px;margin-bottom:4px}
 .box{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px;overflow-x:auto}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;margin-bottom:8px}
 form.fila,.bar{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:flex-end}
-label{display:flex;flex-direction:column;font-size:13px;color:var(--muted);gap:4px}
+label,.campo{display:flex;flex-direction:column;font-size:13px;color:var(--muted);gap:4px}
+.box.visible{overflow:visible}
+.auto{position:relative}
+.auto-in{width:100%;min-width:240px}
+.auto-lista{position:absolute;z-index:30;left:0;top:100%;min-width:100%;width:max-content;max-width:90vw;max-height:260px;overflow-y:auto;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 20px rgba(0,0,0,.14);margin-top:2px}
+.auto-op{padding:8px 12px;cursor:pointer;color:var(--ink);font-size:14px;display:flex;justify-content:space-between;gap:14px}
+.auto-op small{color:var(--muted);white-space:nowrap}
+.auto-op.sel,.auto-op:hover{background:#eef3f1}
+.auto-op.off{opacity:.5;cursor:not-allowed}
+.auto-nada{padding:8px 12px;color:var(--muted);font-size:14px}
 input,select{padding:9px 12px;border:1px solid var(--line);border-radius:8px;font:inherit;color:var(--ink);min-width:150px;background:#fff}
 input:disabled,select:disabled{background:#eef1f0}
 button{padding:9px 16px;border:0;border-radius:8px;background:var(--side);color:#fff;font:inherit;font-weight:500;cursor:pointer}
@@ -112,8 +121,8 @@ const CFG = {
     aviso:"Solo se puede eliminar si no se han vendido sus unidades.",
     cols:[["fecha","Fecha y hora","f"],["tipo","Tipo"],["producto","Producto"],["lote","N° de lote"],["proveedor","Proveedor"],["cantidad","Unidades"],
       ["precio_total","Precio total","$"],["costo_unitario","Precio unitario","$"],["fecha_vencimiento","Vence","d"]],
-    campos:[{k:"producto_id",l:"Producto",t:"select",src:"productos",ver:"nombre",req:1,bloquear:1},
-      {k:"proveedor_id",l:"Proveedor (opcional)",t:"select",src:"proveedores",ver:"empresa"},
+    campos:[{k:"producto_id",l:"Producto",t:"select",src:"productos",ver:"nombre",req:1,bloquear:1,auto:1},
+      {k:"proveedor_id",l:"Proveedor (opcional)",t:"select",src:"proveedores",ver:"empresa",auto:1},
       {k:"tipo",l:"Tipo",t:"select",op:["Compra","Ajuste"]},{k:"lote",l:"N° de lote"},
       {k:"cantidad",l:"Unidades compradas (ajuste: negativo si resta)",t:"number",req:1},{k:"precio_total",l:"Precio total pagado",t:"number"},
       {k:"fecha_vencimiento",l:"Fecha de vencimiento",t:"date"}],
@@ -124,7 +133,7 @@ const CFG = {
     aviso:"Los productos vuelven al stock y se quita su ingreso en caja.",
     fuentes:["clientes","productos","lotes_stock"],
     cols:[["id","N°"],["fecha","Fecha y hora","f"],["cliente","Cliente"],["detalle","Productos"],["unidades","Unidades"],["total","Total","$"],["debe","Debe","$"],["ganancia","Ganancia","gan"]],
-    campos:[{k:"cliente_id",l:"Cliente que compra",t:"select",src:"clientes",ver:"nombre"},{k:"debe",l:"Debe (lo que queda fiado)",t:"number"}],
+    campos:[{k:"cliente_id",l:"Cliente que compra",t:"select",src:"clientes",ver:"nombre",auto:1},{k:"debe",l:"Debe (lo que queda fiado)",t:"number"}],
     filtros:[{k:"cliente",l:"Cliente"},{l:"Pago",fn:[["Con deuda",r=>Number(r.debe)>0],["Pagadas",r=>Number(r.debe)===0]]},{k:"fecha",l:"Mes",mes:1}],
     orden:[["Más recientes","fecha","d",-1],["Más antiguas","fecha","d"],["Mayor total","total","n",-1],["Menor total","total","n"],["Mayor ganancia","ganancia","n",-1],["Cliente (A-Z)","cliente","t"]],
     lista2:{tabla:"venta_items",titulo:"Detalle de productos vendidos",
@@ -136,7 +145,7 @@ const CFG = {
     filtros:[{l:"Deuda",fn:[["Con deuda",r=>Number(r.deuda)>0],["Sin deuda",r=>Number(r.deuda)<=0]]}],
     orden:[...nombreAZ,["Mayor deuda","deuda","n",-1],["Más recientes","creado","d",-1]],
     extra:{tabla:"abonos",titulo:"Registrar abono a una deuda",boton:"Registrar abono",
-      campos:[{k:"cliente_id",l:"Cliente",t:"select",src:"clientes",ver:"nombre",req:1},{k:"monto",l:"Monto del abono",t:"number",req:1}]},
+      campos:[{k:"cliente_id",l:"Cliente",t:"select",src:"clientes",ver:"nombre",req:1,auto:1},{k:"monto",l:"Monto del abono",t:"number",req:1}]},
     lista2:{tabla:"abonos",titulo:"Abonos registrados",borrar:1,cols:[["fecha","Fecha y hora","f"],["cliente","Cliente"],["monto","Monto","$"]]}},
   proveedores:{nombre:"Proveedores",sub:"Quién te surte",tabla:"proveedores",boton:"Agregar proveedor",
     aviso:"Solo se puede eliminar si no tiene compras registradas.",
@@ -269,12 +278,79 @@ async function vistaLista(id) {
   const [filas, l2, ...ls] = await Promise.all([api(m.tabla), m.lista2 ? api(m.lista2.tabla) : [], ...fuentes.map(f => api(f))]);
   VIS = {id, m, filas, l2, edit: null, listas: Object.fromEntries(fuentes.map((f, i) => [f, ls[i]]))};
   return encabezado(m.nombre, m.sub) +
-    `<div class="box"><div id="aviso"></div><div id="formbox">${formHTML()}</div></div>
+    `<div class="box visible"><div id="aviso"></div><div id="formbox">${formHTML()}</div></div>
      <div class="box" style="margin-top:16px"><div id="barra">${barraHTML()}</div><div id="lista">${listaHTML()}</div></div>${lista2HTML()}`;
 }
 
 const opciones = c => c.src ? VIS.listas[c.src].map(o => [o.id, o[c.ver]]) : c.op.map(o => [o, o]);
+/* ---------- Autocompletar: el usuario escribe y se sugieren los registros que existen ---------- */
+const norm = s => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+const extraAuto = (src, o) => src === "productos" ? `${money(o.precio_venta)} · stock ${o.stock}` : src === "clientes" ? (Number(o.deuda) > 0 ? `debe ${money(o.deuda)}` : (o.telefono || "")) : src === "proveedores" ? (o.contacto || "") : "";
+const itemsAuto = inp => VIS.listas[inp.dataset.src].map(o => ({id: o.id, t: o[inp.dataset.ver], x: extraAuto(inp.dataset.src, o),
+  off: !!inp.dataset.sinstock && Number(o.stock) <= 0}));
+const autoHid = inp => inp.parentNode.querySelector('input[type=hidden]');
+const autoLista = inp => inp.parentNode.querySelector(".auto-lista");
+function autoHTML(c, v, bloq, o = {}) {
+  const act = v ? VIS.listas[c.src].find(x => String(x.id) === String(v)) : null;
+  return `<div class="campo">${c.l}<div class="auto">
+    <input class="auto-in" type="text" autocomplete="off" placeholder="Escribe para buscar…" value="${esc(act ? act[c.ver] : "")}"
+      data-src="${c.src}" data-ver="${c.ver}" ${o.sinstock ? 'data-sinstock="1"' : ""} ${o.onpick ? `data-onpick="${o.onpick}"` : ""} ${c.req ? "required" : ""} ${bloq ? "disabled" : ""}
+      oninput="autoEscribir(this)" onfocus="autoBuscar(this)" onkeydown="autoTecla(event,this)" onblur="autoCerrar(this)">
+    <input type="hidden" ${o.cls ? `class="${o.cls}"` : ""} name="${c.k}" value="${esc(v ?? "")}" ${bloq ? "disabled" : ""}>
+    <div class="auto-lista" hidden></div></div></div>`;
+}
+const autoAvisar = inp => { const f = inp.dataset.onpick; if (f && window[f]) window[f](autoHid(inp)); };
+function autoEscribir(inp) {
+  const hid = autoHid(inp);
+  inp.setCustomValidity("");
+  if (hid.value) { hid.value = ""; autoAvisar(inp); }   // el texto cambió: ya no hay nada elegido
+  autoBuscar(inp);
+}
+function autoBuscar(inp) {
+  const lista = autoLista(inp), q = norm(inp.value.trim());
+  const r = itemsAuto(inp).filter(i => !q || norm(i.t).includes(q))
+    .sort((a, b) => (norm(a.t).startsWith(q) ? 0 : 1) - (norm(b.t).startsWith(q) ? 0 : 1) || String(a.t).localeCompare(String(b.t), "es")).slice(0, 8);
+  inp._r = r; inp._i = r.findIndex(x => !x.off);
+  lista.innerHTML = r.length ? r.map((x, i) => `<div class="auto-op ${x.off ? "off" : ""} ${i === inp._i ? "sel" : ""}" ${x.off ? "" : `onmousedown="autoElegir(event,this,${x.id})"`}><span>${esc(x.t)}</span><small>${esc(x.off ? "sin stock" : x.x)}</small></div>`).join("")
+    : `<div class="auto-nada">No hay coincidencias</div>`;
+  lista.hidden = false;
+}
+function autoElegir(ev, el, id) {
+  ev.preventDefault();
+  const inp = el.closest(".auto").querySelector(".auto-in"), it = inp._r.find(x => x.id === id);
+  inp.value = it.t; autoHid(inp).value = id; inp.setCustomValidity(""); autoLista(inp).hidden = true; autoAvisar(inp);
+}
+function autoResolver(inp) {   // si escribió el nombre completo sin elegirlo de la lista, lo reconoce; si no, avisa
+  const hid = autoHid(inp), t = norm(inp.value.trim());
+  if (!hid.value && t) {
+    const it = itemsAuto(inp).find(x => norm(x.t) === t && !x.off);
+    if (it) { hid.value = it.id; inp.value = it.t; autoAvisar(inp); }
+  }
+  inp.setCustomValidity(!hid.value && t ? "Elige una opción de la lista" : "");
+}
+function autoCerrar(inp) { autoLista(inp).hidden = true; autoResolver(inp); }
+function autoTecla(ev, inp) {
+  const lista = autoLista(inp), r = inp._r || [];
+  if (ev.key === "Escape") { lista.hidden = true; return; }
+  if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+    ev.preventDefault();
+    if (lista.hidden) autoBuscar(inp);
+    const rr = inp._r || [], n = rr.length;
+    if (!n || rr.every(x => x.off)) return;
+    let i = inp._i ?? -1;
+    do { i = (i + (ev.key === "ArrowDown" ? 1 : n - 1)) % n; } while (rr[i].off);
+    inp._i = i;
+    [...lista.children].forEach((c, k) => c.classList.toggle("sel", k === i));
+    if (lista.children[i] && lista.children[i].scrollIntoView) lista.children[i].scrollIntoView({block: "nearest"});
+  }
+  if (ev.key === "Enter") {
+    if (!lista.hidden && r[inp._i] && !r[inp._i].off) { ev.preventDefault(); autoElegir({preventDefault() {}}, lista.children[inp._i], r[inp._i].id); }
+    else autoResolver(inp);
+  }
+}
+
 function campoHTML(c, v, bloq) {
+  if (c.auto) return autoHTML(c, v, bloq);
   const val = v ?? "";
   const ctrl = c.t === "select"
     ? `<select name="${c.k}" ${c.req ? "required" : ""} ${bloq ? "disabled" : ""}>${c.src ? `<option value="" ${c.req ? "disabled" : ""} ${val === "" ? "selected" : ""}>${c.req ? "Elegir…" : "—"}</option>` : ""}${
@@ -301,16 +377,15 @@ function pintarForm() {
 function formVentaHTML() {
   PRODS = VIS.listas.productos; LOTES = VIS.listas.lotes_stock;
   return `<p class="sec">Registrar venta</p><form class="fila" oninput="calc()" onsubmit="guardarVenta(event)">
-    <label>Cliente que compra<select name="cliente_id"><option value="">—</option>${VIS.listas.clientes.map(c => `<option value="${c.id}">${esc(c.nombre)}</option>`).join("")}</select></label>
+    ${autoHTML({k:"cliente_id",l:"Cliente que compra",src:"clientes",ver:"nombre"})}
     <label>Debe (lo que queda fiado; 0 si pagó todo)<input name="debe" type="number" min="0" step="any" value="0"></label>
     <div class="lineas" id="lineas">${lineaHTML()}</div>
     <button type="button" onclick="addLinea()">+ Agregar otro producto</button>
     <span class="total" id="total">Total: ${money(0)}</span><button>Registrar venta</button></form>`;
 }
-const lineaHTML = () => `<div class="linea"><label>Producto<select onchange="cambiarProducto(this)"><option value="">Elegir…</option>${
-  PRODS.map(p => `<option value="${p.id}" ${p.stock <= 0 ? "disabled" : ""}>${esc(p.nombre)} · ${money(p.precio_venta)} · stock ${p.stock}</option>`).join("")}</select></label>
+const lineaHTML = () => `<div class="linea">${autoHTML({k:"producto_id",l:"Producto",src:"productos",ver:"nombre",req:1}, null, false, {sinstock:1, onpick:"cambiarProducto", cls:"pid"})}
   <label>N° de lote<select class="lote" disabled><option value="">Primero elige el producto</option></select></label>
-  <label>Cantidad<input type="number" min="1" step="1" value="1"></label><span class="subt">Subtotal: ${money(0)}</span>
+  <label>Cantidad<input class="cant" type="number" min="1" step="1" value="1"></label><span class="subt">Subtotal: ${money(0)}</span>
   <button type="button" class="gris" onclick="this.parentNode.remove();calc()">Quitar</button></div>`;
 const addLinea = () => document.getElementById("lineas").insertAdjacentHTML("beforeend", lineaHTML());
 /* El lote depende del producto: solo salen los lotes de ese producto que todavía tienen unidades (primero el que vence antes) */
@@ -327,8 +402,8 @@ function cambiarProducto(sel) {
 function calc() {
   let t = 0;
   document.querySelectorAll(".linea").forEach(l => {
-    const p = PRODS.find(x => String(x.id) === l.querySelector("select").value);
-    const sub = p ? Number(p.precio_venta) * (Number(l.querySelector("input").value) || 0) : 0;
+    const p = PRODS.find(x => String(x.id) === l.querySelector(".pid").value);
+    const sub = p ? Number(p.precio_venta) * (Number(l.querySelector(".cant").value) || 0) : 0;
     l.querySelector(".subt").textContent = "Subtotal: " + money(sub);
     t += sub;
   });
@@ -406,7 +481,7 @@ function guardarVenta(ev) {
   ev.preventDefault();
   const f = ev.target;
   const items = [...f.querySelectorAll(".linea")]
-    .map(l => ({producto_id: l.querySelector("select").value, movimiento_id: l.querySelector(".lote").value || null, cantidad: l.querySelector("input").value}))
+    .map(l => ({producto_id: l.querySelector(".pid").value, movimiento_id: l.querySelector(".lote").value || null, cantidad: l.querySelector(".cant").value}))
     .filter(i => i.producto_id);
   return enviar(() => api("ventas", "POST", {cliente_id: f.cliente_id.value || null, debe: f.debe.value || 0, items}));
 }
