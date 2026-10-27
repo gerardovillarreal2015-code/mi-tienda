@@ -85,61 +85,66 @@ async function origenCaja(id) {
   return r[0].venta_id || r[0].abono_id ? "Este movimiento viene de una venta o un abono: cámbialo desde ese módulo" : null;
 }
 
-// Venta con productos: valida stock y lote, calcula el total (precio de venta x cantidad) con el catálogo,
-// y en UNA sola sentencia guarda la venta, sus productos y lo que se pagó ahora en caja.
-// Cada línea puede traer movimiento_id (el lote); si no lo trae, se descuenta del lote que vence primero.
+// Venta con productos: el usuario escribe el precio de venta al público de cada línea y ELIGE EL LOTE del que sale.
+// Valida stock y lote (solo lotes con unidades), calcula el total (precio x cantidad) y en UNA sola sentencia guarda
+// la venta, sus productos con el precio y el COSTO DEL LOTE ELEGIDO (quedan fijos, no se vuelven a calcular),
+// deja ese precio como precio actual del producto y registra en caja lo que se pagó ahora.
 async function crearVenta(b) {
   const debe = Number(b.debe || 0);
   if (!(debe >= 0)) return fallo("El valor que debe no es válido");
   if (debe > 0 && !b.cliente_id) return fallo("Si el cliente debe algo, hay que elegir el cliente");
 
-  const lineas = new Map();       // producto + lote -> línea
+  const lineas = new Map();       // producto + lote + precio -> línea
   const porProducto = new Map();  // producto -> unidades
+  const precios = new Map();      // producto -> último precio escrito
   for (const it of Array.isArray(b.items) ? b.items : []) {
-    const id = Number(it.producto_id), cant = Number(it.cantidad);
+    const id = Number(it.producto_id), cant = Number(it.cantidad), precio = Number(it.precio);
     const mov = it.movimiento_id ? Number(it.movimiento_id) : null;
     if (!Number.isInteger(id) || !Number.isInteger(cant) || cant <= 0 || (mov !== null && !Number.isInteger(mov)))
       return fallo("Cada producto debe tener una cantidad entera mayor a 0");
-    const k = `${id}:${mov ?? ""}`;
-    const l = lineas.get(k) || { producto_id: id, movimiento_id: mov, cantidad: 0 };
+    if (!(precio > 0)) return fallo("Escribe el precio de venta al público de cada producto (mayor a 0)");
+    const k = `${id}:${mov ?? ""}:${precio}`;
+    const l = lineas.get(k) || { producto_id: id, movimiento_id: mov, cantidad: 0, precio };
     l.cantidad += cant;
     lineas.set(k, l);
     porProducto.set(id, (porProducto.get(id) || 0) + cant);
+    precios.set(id, precio);
   }
   if (!lineas.size) return fallo("Agrega al menos un producto a la venta");
 
   const prods = await sql.query(
-    "SELECT id, nombre, precio_venta, stock FROM v_productos WHERE id IN (SELECT jsonb_array_elements_text($1::jsonb)::int)",
+    "SELECT id, nombre, stock FROM v_productos WHERE id IN (SELECT jsonb_array_elements_text($1::jsonb)::int)",
     [JSON.stringify([...porProducto.keys()])]);
   if (prods.length !== porProducto.size) return fallo("Un producto de la venta no existe");
+  for (const p of prods) {
+    if (porProducto.get(p.id) > p.stock) return fallo(`No hay stock suficiente de ${p.nombre} (disponible: ${p.stock})`);
+  }
 
   let total = 0;
-  for (const p of prods) {
-    const cant = porProducto.get(p.id);
-    if (cant > p.stock) return fallo(`No hay stock suficiente de ${p.nombre} (disponible: ${p.stock})`);
-    total += cant * Number(p.precio_venta);
-  }
+  for (const l of lineas.values()) total += l.cantidad * l.precio;
+  total = Math.round(total * 100) / 100;
   if (!(total > 0)) return fallo("El total de la venta debe ser mayor a 0");
   if (debe > total) return fallo("Lo que debe no puede ser mayor al total de la venta");
 
-  // Los lotes elegidos deben ser del producto y tener unidades suficientes
-  const movs = [...new Set([...lineas.values()].map((l) => l.movimiento_id).filter(Boolean))];
-  if (movs.length) {
-    const ls = await sql.query(
-      "SELECT id, producto_id, lote, restante FROM v_lotes_stock WHERE id IN (SELECT jsonb_array_elements_text($1::jsonb)::int)",
-      [JSON.stringify(movs)]);
-    const porId = new Map(ls.map((x) => [x.id, x]));
-    const pedido = new Map();
-    for (const l of lineas.values()) {
-      if (!l.movimiento_id) continue;
-      const lote = porId.get(l.movimiento_id);
-      if (!lote || lote.producto_id !== l.producto_id) return fallo("El lote elegido no corresponde al producto");
-      pedido.set(l.movimiento_id, (pedido.get(l.movimiento_id) || 0) + l.cantidad);
+  // Cada línea debe salir de un lote de ese producto que todavía tenga unidades suficientes
+  const disp = await sql.query(
+    "SELECT id, producto_id, lote, restante FROM v_lotes_stock WHERE restante > 0 AND producto_id IN (SELECT jsonb_array_elements_text($1::jsonb)::int)",
+    [JSON.stringify([...porProducto.keys()])]);
+  const porId = new Map(disp.map((x) => [x.id, x]));
+  const nombre = new Map(prods.map((p) => [p.id, p.nombre]));
+  const pedido = new Map();
+  for (const l of lineas.values()) {
+    if (!l.movimiento_id) {
+      if (disp.some((x) => x.producto_id === l.producto_id)) return fallo(`Elige el lote del que sale ${nombre.get(l.producto_id)}`);
+      continue;
     }
-    for (const [mid, cant] of pedido) {
-      const lote = porId.get(mid);
-      if (cant > lote.restante) return fallo(`No hay suficientes unidades en el lote ${lote.lote} (disponible: ${lote.restante})`);
-    }
+    const lote = porId.get(l.movimiento_id);
+    if (!lote || lote.producto_id !== l.producto_id) return fallo("El lote elegido no corresponde al producto o ya no tiene unidades");
+    pedido.set(l.movimiento_id, (pedido.get(l.movimiento_id) || 0) + l.cantidad);
+  }
+  for (const [mid, cant] of pedido) {
+    const lote = porId.get(mid);
+    if (cant > lote.restante) return fallo(`No hay suficientes unidades en el lote ${lote.lote} (disponible: ${lote.restante})`);
   }
 
   const r = await sql.query(
@@ -147,22 +152,33 @@ async function crearVenta(b) {
        INSERT INTO ventas (cliente_id, debe, total) VALUES ($1, $2, $3) RETURNING id, total, debe
      ), it AS (
        INSERT INTO venta_items (venta_id, producto_id, movimiento_id, cantidad, precio_unitario, costo_unitario)
-       SELECT v.id, x.producto_id, x.movimiento_id, x.cantidad, p.precio_venta, p.precio_compra
-       FROM v CROSS JOIN jsonb_to_recordset($4::jsonb) AS x(producto_id int, movimiento_id int, cantidad int)
+       SELECT v.id, x.producto_id, x.movimiento_id, x.cantidad, x.precio,
+              COALESCE((SELECT ROUND(m.precio_total / m.cantidad, 2) FROM inventario_movimientos m
+                        WHERE m.id = x.movimiento_id AND m.cantidad > 0), p.precio_compra)
+       FROM v CROSS JOIN jsonb_to_recordset($4::jsonb) AS x(producto_id int, movimiento_id int, cantidad int, precio numeric)
        JOIN v_productos p ON p.id = x.producto_id
        RETURNING id
+     ), up AS (
+       UPDATE productos pr SET precio_venta = x.precio
+       FROM jsonb_to_recordset($5::jsonb) AS x(producto_id int, precio numeric)
+       WHERE pr.id = x.producto_id
+       RETURNING pr.id
      ), cj AS (
        INSERT INTO caja_movimientos (concepto, tipo, monto, venta_id)
        SELECT 'Venta #' || v.id, 'Ingreso', v.total - v.debe, v.id FROM v WHERE v.total - v.debe > 0
        RETURNING id
      )
      SELECT id FROM v`,
-    [b.cliente_id || null, debe, total, JSON.stringify([...lineas.values()])]);
+    [b.cliente_id || null, debe, total, JSON.stringify([...lineas.values()]),
+     JSON.stringify([...precios].map(([producto_id, precio]) => ({ producto_id, precio })))]);
   return json({ id: r[0].id, total, debe }, 201);
 }
 
 // Editar una venta: cliente y lo que debe. El ingreso en caja se ajusta solo.
 async function editarVenta(id, b) {
+  // El precio de venta y el costo quedan fijos desde que se registra la venta
+  if (["items", "precio", "precio_unitario", "costo", "costo_unitario", "total"].some((k) => b[k] !== undefined))
+    return fallo("El precio de venta y el costo no se pueden cambiar después de registrar la venta");
   const debe = Number(b.debe || 0);
   if (!(debe >= 0)) return fallo("El valor que debe no es válido");
   if (debe > 0 && !b.cliente_id) return fallo("Si el cliente debe algo, hay que elegir el cliente");

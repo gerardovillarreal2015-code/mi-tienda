@@ -107,10 +107,10 @@ const CFG = {
     cols:[["nombre","Categoría"],["productos","Productos"]],
     campos:[{k:"nombre",l:"Nombre de la categoría",req:1}],
     orden:[...nombreAZ,["Más productos","productos","n",-1]]},
-  productos:{nombre:"Productos",sub:"Catálogo: el código se genera solo. La ganancia es precio de venta − precio unitario de compra (% sobre el costo)",tabla:"productos",boton:"Agregar producto",
+  productos:{nombre:"Productos",sub:"Catálogo: el código se genera solo. El precio de venta es el último que escribiste en una venta. Ganancia = precio de venta − costo del último lote (% sobre el costo)",tabla:"productos",costos:1,boton:"Agregar producto",
     aviso:"Solo se puede eliminar si no tiene compras ni ventas registradas.",
     cols:[["codigo","Código"],["nombre","Producto"],["categoria","Categoría"],["precio_total_compra","Precio total de compra","$"],["unidades_compra","Unidades compradas"],
-      ["precio_compra","Precio unitario de compra","$"],["precio_venta","Precio de venta","$"],["ganancia","Ganancia por unidad","gan"],["stock","Stock"]],
+      ["precio_compra","Precio unitario de compra","$"],["costo_ult","Costo último lote","$"],["precio_venta","Precio de venta al público","$"],["ganancia","Ganancia por unidad","gan"],["stock","Stock"]],
     campos:[{k:"nombre",l:"Producto",req:1},{k:"categoria_id",l:"Categoría",t:"select",src:"categorias",ver:"nombre",req:1},
       {k:"precio_total_compra",l:"Precio total de compra",t:"number",req:1},{k:"unidades_compra",l:"Unidades compradas",t:"number",req:1},
       {k:"precio_venta",l:"Precio de venta al público (por unidad)",t:"number",req:1}],
@@ -129,15 +129,16 @@ const CFG = {
     hint:{total:"precio_total",unidades:"cantidad",texto:"Precio unitario"},
     filtros:[{k:"producto",l:"Producto"},{k:"proveedor",l:"Proveedor"},{k:"tipo",l:"Tipo"},{k:"fecha",l:"Mes",mes:1}],
     orden:[["Más recientes","fecha","d",-1],["Más antiguos","fecha","d"],["Producto (A-Z)","producto","t"],["Vence primero","fecha_vencimiento","d"]]},
-  ventas:{nombre:"Ventas",sub:"Productos vendidos, cantidad y total (precio de venta × cantidad). Ganancia = (precio de venta − costo promedio del inventario) × cantidad, y % sobre el costo. Hora de Colombia",tabla:"ventas",
+  ventas:{nombre:"Ventas",sub:"Eliges el lote (solo salen los que tienen unidades) y escribes el precio de venta al público. Ganancia = total vendido − total del costo del lote elegido, y % sobre el costo. Al registrar la venta, el precio y el costo quedan fijos. Hora de Colombia",tabla:"ventas",
     aviso:"Los productos vuelven al stock y se quita su ingreso en caja.",
+    costos:1,
     fuentes:["clientes","productos","lotes_stock"],
     cols:[["id","N°"],["fecha","Fecha y hora","f"],["cliente","Cliente"],["detalle","Productos"],["unidades","Unidades"],["total","Total","$"],["debe","Debe","$"],["ganancia","Ganancia","gan"]],
     campos:[{k:"cliente_id",l:"Cliente que compra",t:"select",src:"clientes",ver:"nombre",auto:1},{k:"debe",l:"Debe (lo que queda fiado)",t:"number"}],
     filtros:[{k:"cliente",l:"Cliente"},{l:"Pago",fn:[["Con deuda",r=>Number(r.debe)>0],["Pagadas",r=>Number(r.debe)===0]]},{k:"fecha",l:"Mes",mes:1}],
     orden:[["Más recientes","fecha","d",-1],["Más antiguas","fecha","d"],["Mayor total","total","n",-1],["Menor total","total","n"],["Mayor ganancia","ganancia","n",-1],["Cliente (A-Z)","cliente","t"]],
     lista2:{tabla:"venta_items",titulo:"Detalle de productos vendidos",
-      cols:[["venta_id","Venta N°"],["fecha","Fecha y hora","f"],["cliente","Cliente"],["producto","Producto"],["lote","N° de lote"],["cantidad","Cantidad"],["precio_unitario","Precio unitario","$"],["costo_inventario","Costo unitario (inventario)","$"],["subtotal","Total","$"],["ganancia_inv","Ganancia","ganinv"]]}},
+      cols:[["venta_id","Venta N°"],["fecha","Fecha y hora","f"],["cliente","Cliente"],["producto","Producto"],["lote","N° de lote"],["cantidad","Cantidad"],["precio_unitario","Precio unitario","$"],["costo_lote","Costo (lote vendido)","$"],["subtotal","Total","$"],["ganancia_inv","Ganancia","ganinv"]]}},
   clientes:{nombre:"Clientes",sub:"Tus compradores y lo que te deben",tabla:"clientes",boton:"Agregar cliente",
     aviso:"Solo se puede eliminar si no tiene ventas ni abonos.",
     cols:[["id","N°"],["nombre","Nombre"],["telefono","Teléfono"],["correo","Correo"],["deuda","Deuda","$"]],
@@ -172,6 +173,38 @@ function tablaHTML(cols, filas, acc) {
     filas.map(f => `<tr>${cols.map(c => `<td>${celda(f[c[0]], c[2], f)}</td>`).join("")}${acc ? `<td class="acc">${acc(f)}</td>` : ""}</tr>`).join("")}</table>`;
 }
 
+/* ---------- Costo de compra = el del ÚLTIMO LOTE (la compra más reciente del inventario) ----------
+   Se calcula aquí con los datos que ya existen; no se cambia nada en la base de datos. */
+function indexarCompras(movs) {
+  const por = {};
+  movs.filter(m => m.tipo === "Compra" && Number(m.cantidad) > 0)
+    .sort((a, b) => a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : b.id - a.id)   // la más nueva primero
+    .forEach(m => (por[m.producto_id] ||= []).push(m));
+  return por;
+}
+const costoUlt = (por, pid) => por[pid] ? Number(por[pid][0].costo_unitario) : null;
+/* Productos: costo del último lote y ganancia por unidad = precio de venta actual − ese costo */
+function conUltimoLote(prods, movs) {
+  const por = indexarCompras(movs);
+  return prods.map(p => {
+    const costo = costoUlt(por, p.id) ?? Number(p.precio_compra), g = Number(p.precio_venta) - costo;
+    return {...p, costo_ult: costo, ganancia: g, ganancia_pct: costo > 0 ? Math.round(g / costo * 1000) / 10 : null};
+  });
+}
+/* Líneas de venta: usan el precio y el costo GUARDADOS al vender (costo del lote elegido). No se recalculan nunca. */
+function itemsConGanancia(items) {
+  return items.map(i => {
+    const costo = Number(i.costo_unitario), u = Number(i.precio_unitario) - costo;
+    return {...i, costo_lote: costo, ganancia: Number(i.cantidad) * u, ganancia_inv: Number(i.cantidad) * u, ganancia_inv_pct: costo > 0 ? Math.round(u / costo * 1000) / 10 : null};
+  });
+}
+/* Ventas: ganancia total = total vendido − total del costo (con el último lote) */
+function ventasConGanancia(ventas, items) {
+  const g = {};
+  items.forEach(i => { const a = g[i.venta_id] ||= {g: 0, c: 0}; a.g += i.ganancia; a.c += Number(i.cantidad) * i.costo_lote; });
+  return ventas.map(v => { const a = g[v.id]; return {...v, ganancia: a ? a.g : null, ganancia_pct: a && a.c > 0 ? Math.round(a.g / a.c * 1000) / 10 : null}; });
+}
+
 /* ---------- Gráficos (SVG, sin librerías) ---------- */
 function grafico(datos, series) {
   const W = 640, H = 230, base = H - 26, alto = H - 56;
@@ -191,7 +224,8 @@ function grafico(datos, series) {
 let MES = null;
 const VISTAS = {
   async dashboard() {
-    const [p, c, v, k, l, it] = await Promise.all(["productos","clientes","ventas","caja_movimientos","lotes","venta_items"].map(t => api(t)));
+    const [p0, c, v, k, l, it0, movs] = await Promise.all(["productos","clientes","ventas","caja_movimientos","lotes","venta_items","inventario_movimientos"].map(t => api(t)));
+    const p = conUltimoLote(p0, movs), it = itemsConGanancia(it0);
     const hoyMes = mesCO(new Date());
     const meses = [...new Set([hoyMes, ...v.map(x => mesCO(x.fecha))])].sort().reverse();
     if (!MES || !meses.includes(MES)) MES = hoyMes;
@@ -224,10 +258,11 @@ const VISTAS = {
       <div class="stats">${stat(money(suma(c, x => Number(x.deuda))),"Por cobrar a clientes")}${
         stat(money(k.reduce((a, x) => a + (x.tipo === "Ingreso" ? 1 : -1) * Number(x.monto), 0)),"Saldo en caja")}${
         stat(bajo,"Productos con stock bajo")}${stat(porVencer,"Compras por vencer (5 días)")}${stat(vencidos,"Compras vencidas con stock")}${
-        stat(money(suma(p, x => x.stock * x.precio_compra)),"Inventario a precio de compra")}${stat(c.length,"Clientes registrados")}</div>`;
+        stat(money(suma(p, x => x.stock * x.costo_ult)),"Inventario a precio de compra")}${stat(c.length,"Clientes registrados")}</div>`;
   },
   async reportes() {
-    const [p, v, k, c, it] = await Promise.all(["productos","ventas","caja_movimientos","clientes","venta_items"].map(t => api(t)));
+    const [p0, v, k, c, it0, movs] = await Promise.all(["productos","ventas","caja_movimientos","clientes","venta_items","inventario_movimientos"].map(t => api(t)));
+    const p = conUltimoLote(p0, movs), it = itemsConGanancia(it0);
     const suma = (arr, f) => arr.reduce((a, x) => a + f(x), 0);
     const caja = tipo => suma(k.filter(x => x.tipo === tipo), x => Number(x.monto));
     const acum = {};
@@ -235,7 +270,7 @@ const VISTAS = {
     const top = Object.values(acum).sort((a, b) => b.cantidad - a.cantidad).slice(0, 5);
     return encabezado("Reportes","Totales de la tienda") + `<div class="stats">${
       stat(money(suma(v, x => Number(x.total))),"Total vendido")}${stat(money(suma(it, x => Number(x.ganancia))),"Ganancia de las ventas")}${
-      stat(money(suma(p, x => x.stock * x.precio_compra)),"Inventario a precio de compra")}${stat(money(suma(p, x => x.stock * x.precio_venta)),"Inventario a precio de venta")}${
+      stat(money(suma(p, x => x.stock * x.costo_ult)),"Inventario a precio de compra")}${stat(money(suma(p, x => x.stock * x.precio_venta)),"Inventario a precio de venta")}${
       stat(money(suma(p, x => x.stock * x.ganancia)),"Ganancia potencial del inventario")}${stat(money(caja("Ingreso")),"Ingresos en caja")}${
       stat(money(caja("Egreso")),"Egresos en caja")}${stat(money(suma(c, x => Number(x.deuda))),"Por cobrar a clientes")}</div>
       <div class="box"><b>Productos más vendidos</b>${tablaHTML([["producto","Producto"],["cantidad","Unidades vendidas"],["ganancia","Ganancia","$"]], top)}</div>`;
@@ -266,7 +301,7 @@ async function vistaVencimientos() {
 }
 
 /* ---------- Módulos con lista, filtros, orden, editar y eliminar ---------- */
-let VIS = null, HINT = null, PRODS = [], LOTES = [];
+let VIS = null, HINT = null, PRODS = [], LOTES = [], COSTOMOV = {};
 const EST = {};
 const E = id => EST[id] ||= {q: "", f: {}, o: 0};
 
@@ -275,8 +310,11 @@ async function vistaLista(id) {
   HINT = m.hint || null;
   const todos = [...m.campos, ...(m.extra ? m.extra.campos : [])];
   const fuentes = [...new Set([...todos.filter(c => c.src).map(c => c.src), ...(m.fuentes || [])])];
-  const [filas, l2, ...ls] = await Promise.all([api(m.tabla), m.lista2 ? api(m.lista2.tabla) : [], ...fuentes.map(f => api(f))]);
-  VIS = {id, m, filas, l2, edit: null, listas: Object.fromEntries(fuentes.map((f, i) => [f, ls[i]]))};
+  const [filas0, l20, movs, ...ls] = await Promise.all([api(m.tabla), m.lista2 ? api(m.lista2.tabla) : [], m.costos ? api("inventario_movimientos") : [], ...fuentes.map(f => api(f))]);
+  let filas = filas0, l2 = l20;
+  if (id === "productos") filas = conUltimoLote(filas0, movs);
+  if (id === "ventas") { l2 = itemsConGanancia(l20); filas = ventasConGanancia(filas0, l2); }
+  VIS = {id, m, filas, l2, movs, edit: null, listas: Object.fromEntries(fuentes.map((f, i) => [f, ls[i]]))};
   return encabezado(m.nombre, m.sub) +
     `<div class="box visible"><div id="aviso"></div><div id="formbox">${formHTML()}</div></div>
      <div class="box" style="margin-top:16px"><div id="barra">${barraHTML()}</div><div id="lista">${listaHTML()}</div></div>${lista2HTML()}`;
@@ -362,7 +400,7 @@ function campoHTML(c, v, bloq) {
 function formHTML() {
   const {id, m, edit} = VIS;
   const principal = (id === "ventas" && !edit) ? formVentaHTML() :
-    `<p class="sec">${edit ? `Editando registro #${edit.id}` : "Agregar nuevo"}</p>${edit && id === "ventas" ? '<p class="subt">Para cambiar los productos de una venta, elimínala y regístrala de nuevo.</p>' : ""}
+    `<p class="sec">${edit ? `Editando registro #${edit.id}` : "Agregar nuevo"}</p>${edit && id === "ventas" ? '<p class="subt">Aquí solo se cambian el cliente y lo que debe: el precio de venta y el costo quedan fijos. Para cambiar los productos, elimina la venta y regístrala de nuevo.</p>' : ""}
     <form class="fila" ${m.hint ? 'oninput="hint(this)"' : ""} onsubmit="guardar(event)">${m.campos.map(c => campoHTML(c, edit ? edit[c.k] : null, edit && c.bloquear)).join("")}
     <button>${edit ? "Guardar cambios" : m.boton}</button>${edit ? '<button type="button" class="gris" onclick="cancelar()">Cancelar</button>' : ""}${m.hint ? '<span class="total" id="hint"></span>' : ""}</form>`;
   const extra = m.extra ? `<p class="sec">${m.extra.titulo}</p><form class="fila" onsubmit="guardarExtra(event)">${m.extra.campos.map(c => campoHTML(c)).join("")}<button>${m.extra.boton}</button></form>` : "";
@@ -375,7 +413,7 @@ function pintarForm() {
 }
 
 function formVentaHTML() {
-  PRODS = VIS.listas.productos; LOTES = VIS.listas.lotes_stock;
+  PRODS = VIS.listas.productos; LOTES = VIS.listas.lotes_stock; COSTOMOV = Object.fromEntries(VIS.movs.filter(m => Number(m.cantidad) > 0).map(m => [m.id, Number(m.costo_unitario)]));
   return `<p class="sec">Registrar venta</p><form class="fila" oninput="calc()" onsubmit="guardarVenta(event)">
     ${autoHTML({k:"cliente_id",l:"Cliente que compra",src:"clientes",ver:"nombre"})}
     <label>Debe (lo que queda fiado; 0 si pagó todo)<input name="debe" type="number" min="0" step="any" value="0"></label>
@@ -384,31 +422,47 @@ function formVentaHTML() {
     <span class="total" id="total">Total: ${money(0)}</span><button>Registrar venta</button></form>`;
 }
 const lineaHTML = () => `<div class="linea">${autoHTML({k:"producto_id",l:"Producto",src:"productos",ver:"nombre",req:1}, null, false, {sinstock:1, onpick:"cambiarProducto", cls:"pid"})}
-  <label>N° de lote<select class="lote" disabled><option value="">Primero elige el producto</option></select></label>
-  <label>Cantidad<input class="cant" type="number" min="1" step="1" value="1"></label><span class="subt">Subtotal: ${money(0)}</span>
+  <label>N° de lote (solo con unidades)<select class="lote" disabled><option value="">Primero elige el producto</option></select></label>
+  <label>Cantidad<input class="cant" type="number" min="1" step="1" value="1"></label>
+  <label>Precio de venta al público (por unidad)<input class="precio" type="number" min="0" step="any" placeholder="Escríbelo según el último lote"></label>
+  <span class="subt">Subtotal: ${money(0)}</span>
   <button type="button" class="gris" onclick="this.parentNode.remove();calc()">Quitar</button></div>`;
 const addLinea = () => document.getElementById("lineas").insertAdjacentHTML("beforeend", lineaHTML());
-/* El lote depende del producto: solo salen los lotes de ese producto que todavía tienen unidades (primero el que vence antes) */
+/* El lote depende del producto: solo salen los lotes de ese producto que todavía tienen unidades (primero el que vence antes).
+   El precio se sugiere con el último que se usó para ese producto, pero el usuario lo escribe/cambia. */
 function cambiarProducto(sel) {
-  const lote = sel.closest(".linea").querySelector(".lote");
+  const linea = sel.closest(".linea"), lote = linea.querySelector(".lote"), precio = linea.querySelector(".precio");
   const ls = LOTES.filter(x => String(x.producto_id) === sel.value && x.restante > 0)
     .sort((a, b) => (a.fecha_vencimiento || "9999") < (b.fecha_vencimiento || "9999") ? -1 : 1);
   lote.disabled = !ls.length;
   lote.innerHTML = ls.length
     ? ls.map(x => `<option value="${x.id}">${esc(x.lote)} · ${x.fecha_vencimiento ? "vence " + soloFecha(x.fecha_vencimiento) : "sin vencimiento"} · quedan ${x.restante}</option>`).join("")
     : `<option value="">${sel.value ? "Sin lotes con unidades" : "Primero elige el producto"}</option>`;
+  const p = PRODS.find(x => String(x.id) === sel.value);
+  precio.value = p && Number(p.precio_venta) > 0 ? Number(p.precio_venta) : "";
+  precio.required = !!sel.value;
   calc();
 }
 function calc() {
-  let t = 0;
+  let t = 0, g = 0;
   document.querySelectorAll(".linea").forEach(l => {
     const p = PRODS.find(x => String(x.id) === l.querySelector(".pid").value);
-    const sub = p ? Number(p.precio_venta) * (Number(l.querySelector(".cant").value) || 0) : 0;
-    l.querySelector(".subt").textContent = "Subtotal: " + money(sub);
-    t += sub;
+    const mid = l.querySelector(".lote").value, lote = LOTES.find(x => String(x.id) === mid);
+    l.querySelector(".cant").max = lote ? lote.restante : "";            // no se puede vender más de lo que tiene el lote
+    const cant = Number(l.querySelector(".cant").value) || 0, precio = Number(l.querySelector(".precio").value) || 0;
+    let txt = "Subtotal: " + money(p ? cant * precio : 0);
+    if (p) {
+      t += cant * precio;
+      const costo = COSTOMOV[mid] ?? Number(p.precio_compra);             // costo del lote elegido
+      if (precio > 0) {
+        g += cant * (precio - costo);
+        txt += ` · Costo del lote: ${money(costo)} · Ganancia: ${money(cant * (precio - costo))}${costo > 0 ? ` (${pct((precio - costo) / costo * 100)})` : ""}${precio < costo ? " ⚠ por debajo del costo" : ""}`;
+      }
+    }
+    l.querySelector(".subt").textContent = txt;
   });
   const debe = Number(document.querySelector('[name="debe"]').value) || 0;
-  document.getElementById("total").textContent = `Total: ${money(t)} · Paga ahora: ${money(Math.max(0, t - debe))} · Debe: ${money(debe)}`;
+  document.getElementById("total").textContent = `Total: ${money(t)} · Ganancia: ${money(g)} · Paga ahora: ${money(Math.max(0, t - debe))} · Debe: ${money(debe)}`;
 }
 function hint(f) {
   const t = Number(f[HINT.total].value), u = Number(f[HINT.unidades].value), el = document.getElementById("hint");
@@ -481,7 +535,7 @@ function guardarVenta(ev) {
   ev.preventDefault();
   const f = ev.target;
   const items = [...f.querySelectorAll(".linea")]
-    .map(l => ({producto_id: l.querySelector(".pid").value, movimiento_id: l.querySelector(".lote").value || null, cantidad: l.querySelector(".cant").value}))
+    .map(l => ({producto_id: l.querySelector(".pid").value, movimiento_id: l.querySelector(".lote").value || null, cantidad: l.querySelector(".cant").value, precio: l.querySelector(".precio").value}))
     .filter(i => i.producto_id);
   return enviar(() => api("ventas", "POST", {cliente_id: f.cliente_id.value || null, debe: f.debe.value || 0, items}));
 }
